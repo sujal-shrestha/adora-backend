@@ -1,4 +1,7 @@
+// tests/auth.test.js
+import { jest } from '@jest/globals';
 jest.setTimeout(30000);
+
 import request from 'supertest';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
