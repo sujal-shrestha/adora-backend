@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.11.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
@@ -19,7 +20,12 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.17.0",
     "mongoose": "^8.15.1",
+<<<<<<< HEAD
     "multer": "^2.0.2"
+=======
+    "multer": "^2.0.2",
+    "openai": "^5.11.0"
+>>>>>>> sprint-3-4
   },
   "devDependencies": {
     "@babel/preset-env": "^7.28.0",

@@ -10,8 +10,8 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   profilePic: { type: String, default: '' },
-
   media: [mediaSchema],
+  credits: { type: Number, default: 20 },
 }, { timestamps: true });
 
 userSchema.post('save', function (doc) {
@@ -19,3 +19,4 @@ userSchema.post('save', function (doc) {
 });
 
 export default mongoose.model('User', userSchema);
+
