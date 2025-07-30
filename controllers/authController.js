@@ -30,10 +30,16 @@ export const registerUser = async (req, res) => {
     console.log('✅ User registered:', user);
 
     return res.status(201).json({
-      message: 'Registered successfully',
-      token,
-      user: { id: user._id, email: user.email },
-    });
+  message: 'Registered successfully',
+  token,
+  user: {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    profilePic: user.profilePic || '',
+    credits: user.credits || 0,
+  },
+});
   } catch (error) {
     console.error('🔥 Registration Error:', error);
     return res.status(500).json({ message: 'Server error' });
@@ -69,12 +75,33 @@ export const loginUser = async (req, res) => {
     console.log('✅ User logged in:', user);
 
     return res.status(200).json({
-      message: 'Login successful',
-      token, // Send token to frontend
-      user: { id: user._id, email: user.email },
-    });
+    message: 'Login successful',
+    token,
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      profilePic: user.profilePic || '',
+      credits: user.credits || 0,
+    },
+  });
+
   } catch (error) {
     console.error('🔥 Login Error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.error('🔥 Profile Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
