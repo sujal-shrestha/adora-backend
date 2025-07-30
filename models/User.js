@@ -19,4 +19,3 @@ userSchema.post('save', function (doc) {
 });
 
 export default mongoose.model('User', userSchema);
-

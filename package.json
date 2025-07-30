@@ -21,11 +21,15 @@
     "mongodb": "^6.17.0",
     "mongoose": "^8.15.1",
 <<<<<<< HEAD
+<<<<<<< HEAD
     "multer": "^2.0.2"
 =======
     "multer": "^2.0.2",
     "openai": "^5.11.0"
 >>>>>>> sprint-3-4
+=======
+    "multer": "^2.0.2"
+>>>>>>> a8b778167760f2e9a239c8eb976c43ec6a6e8577
   },
   "devDependencies": {
     "@babel/preset-env": "^7.28.0",

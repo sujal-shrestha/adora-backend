@@ -85,7 +85,6 @@ export const loginUser = async (req, res) => {
       credits: user.credits || 0,
     },
   });
-
   } catch (error) {
     console.error('🔥 Login Error:', error);
     res.status(500).json({ message: 'Server error' });

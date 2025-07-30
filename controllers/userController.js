@@ -66,7 +66,6 @@ export const updateMyProfile = async (req, res) => {
 export const deleteMyAccount = async (req, res) => {
   try {
     console.log('🔥 Reached deleteMyAccount route', req.user?.id); // <-- ADD THIS
-
     await User.findByIdAndDelete(req.user.id);
     res.json({ message: 'Your account has been deleted' });
   } catch (err) {
