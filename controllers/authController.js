@@ -14,6 +14,7 @@ export const registerUser = async (req, res) => {
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+      console.log('⚠️ Duplicate email found:', email);
       return res.status(409).json({ message: 'User already exists' });
     }
 
