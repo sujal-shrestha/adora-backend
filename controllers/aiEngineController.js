@@ -1,3 +1,5 @@
+// controllers/aiEngineController.js
+
 import User from "../models/User.js";
 import BusinessProfile from "../models/BusinessProfile.js";
 import AIJob from "../models/AIJob.js";
@@ -5,9 +7,6 @@ import { validateTask, compileNovaPrompt } from "../services/aiPromptCompiler.js
 import { retrieveExamples } from "../services/exampleRetriever.js";
 import { callLLM } from "../services/llmService.js";
 
-/**
- * Credits cost per task (tune anytime)
- */
 function taskCost(task) {
   const map = {
     meta_ad_variants: 2,
@@ -24,9 +23,6 @@ function taskCost(task) {
   return map[task] ?? 3;
 }
 
-/**
- * Notes normalization: string | array | anything -> string
- */
 function normalizeNotes(notes) {
   if (!notes) return "";
   if (typeof notes === "string") return notes.trim();
@@ -35,221 +31,193 @@ function normalizeNotes(notes) {
 }
 
 /**
- * Ensure base output shape exists:
- * parsed.output.format and parsed.output.notes
- */
-function ensureBaseShape(parsed) {
-  const safe = parsed && typeof parsed === "object" ? parsed : {};
-  safe.output = safe.output && typeof safe.output === "object" ? safe.output : {};
-  safe.output.format =
-    safe.output.format && typeof safe.output.format === "object"
-      ? safe.output.format
-      : {};
-  return safe;
-}
-
-/**
- * Meta ads normalization:
- * - If model returns output.meta_ad_variants.variants, move it to output.format.variants
- * - Normalize notes (root notes/output notes) into output.notes string
- * - Remove confusing extras to keep DB clean
+ * Normalize meta variants into:
+ * { output: { format: { variants: [...] }, notes: "..." } }
  */
 function normalizeMetaAds(parsed) {
-  const safe = ensureBaseShape(parsed);
+  if (!parsed || typeof parsed !== "object") return parsed;
 
-  const nestedVariants = safe?.output?.meta_ad_variants?.variants;
-  const directVariants = safe?.output?.format?.variants;
+  const variantsC = parsed?.output?.format?.variants;
+  const variantsA = parsed?.meta_ad_variants?.output?.format?.variants;
+  const variantsB = parsed?.output?.meta_ad_variants?.variants;
 
-  if (!Array.isArray(directVariants) && Array.isArray(nestedVariants)) {
-    safe.output.format.variants = nestedVariants;
+  const pickedVariants = Array.isArray(variantsC)
+    ? variantsC
+    : Array.isArray(variantsA)
+    ? variantsA
+    : Array.isArray(variantsB)
+    ? variantsB
+    : null;
+
+  const notesC = parsed?.output?.notes;
+  const notesA = parsed?.meta_ad_variants?.output?.notes;
+  const notesRoot = parsed?.notes;
+
+  const finalNotes =
+    normalizeNotes(notesC) ||
+    normalizeNotes(notesA) ||
+    normalizeNotes(notesRoot) ||
+    "Generated based on your input and constraints.";
+
+  parsed.output = parsed.output || {};
+  parsed.output.format = parsed.output.format || {};
+
+  if (pickedVariants && !Array.isArray(parsed.output.format.variants)) {
+    parsed.output.format.variants = pickedVariants;
   }
 
-  // Notes can appear at root, output.notes, or be an array
-  const rootNotes = normalizeNotes(safe?.notes);
-  const outNotes = normalizeNotes(safe?.output?.notes);
+  parsed.output.notes = finalNotes;
 
-  const finalNotes = (outNotes || rootNotes || "").trim();
-  safe.output.notes =
-    finalNotes || "Generated based on your brand kit and constraints.";
+  if (parsed.meta_ad_variants) delete parsed.meta_ad_variants;
+  if (parsed.notes) delete parsed.notes;
+  if (parsed.output?.meta_ad_variants) delete parsed.output.meta_ad_variants;
 
-  // Clean up extra wrappers if present
-  if (safe?.output?.meta_ad_variants) delete safe.output.meta_ad_variants;
-  if (safe?.notes) delete safe.notes;
-
-  return safe;
+  return parsed;
 }
 
-/**
- * Generic normalization per task
- */
-function normalizeByTask(task, parsed) {
-  if (task === "meta_ad_variants") return normalizeMetaAds(parsed);
-
-  // For other tasks: still ensure base shape + normalize notes if needed
-  const safe = ensureBaseShape(parsed);
-  const rootNotes = normalizeNotes(safe?.notes);
-  const outNotes = normalizeNotes(safe?.output?.notes);
-  safe.output.notes =
-    (outNotes || rootNotes || "").trim() ||
-    "Generated based on your brand kit and constraints.";
-
-  if (safe?.notes) delete safe.notes;
-  return safe;
-}
-
-/**
- * Validators: return true/false
- * (We can add more later per task)
- */
 function assertMetaAdsShape(parsed) {
-  // Expected:
-  // { output: { format: { variants: [ { primary_text, headline, description, cta, angle } ] }, notes: "..." } }
   const variants = parsed?.output?.format?.variants;
-  if (!Array.isArray(variants) || variants.length < 1) return false;
+  if (!Array.isArray(variants) || variants.length !== 5) return false;
 
   const required = ["primary_text", "headline", "description", "cta", "angle"];
-  return variants.every((v) => required.every((k) => typeof v?.[k] === "string"));
-}
-
-function assertGoogleAdsShape(parsed) {
-  const headlines = parsed?.output?.format?.headlines;
-  const descriptions = parsed?.output?.format?.descriptions;
-  return (
-    Array.isArray(headlines) &&
-    headlines.length >= 3 &&
-    headlines.every((h) => typeof h === "string") &&
-    Array.isArray(descriptions) &&
-    descriptions.length >= 2 &&
-    descriptions.every((d) => typeof d === "string")
+  return variants.every((v) =>
+    required.every((k) => typeof v?.[k] === "string" && v[k].trim().length > 0)
   );
-}
-
-function assertEmailShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.subject === "string" &&
-    typeof f?.preview === "string" &&
-    typeof f?.body === "string" &&
-    typeof f?.cta === "string"
-  );
-}
-
-function assertTikTokShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.hook === "string" &&
-    Array.isArray(f?.script) &&
-    f.script.every((x) => typeof x === "string") &&
-    Array.isArray(f?.on_screen_text) &&
-    f.on_screen_text.every((x) => typeof x === "string") &&
-    typeof f?.cta === "string"
-  );
-}
-
-function assertLandingShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.hero_headline === "string" &&
-    typeof f?.subheadline === "string" &&
-    Array.isArray(f?.bullets) &&
-    f.bullets.every((x) => typeof x === "string") &&
-    Array.isArray(f?.faq) &&
-    f.faq.every((x) => typeof x?.q === "string" && typeof x?.a === "string")
-  );
-}
-
-function assertCampaignPlanShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.objective === "string" &&
-    typeof f?.big_idea === "string" &&
-    Array.isArray(f?.angles) &&
-    Array.isArray(f?.creatives) &&
-    Array.isArray(f?.funnel) &&
-    Array.isArray(f?.audiences) &&
-    typeof f?.budget_split === "object" &&
-    typeof f?.timeline_days === "number" &&
-    Array.isArray(f?.kpis)
-  );
-}
-
-function assertAngleBankShape(parsed) {
-  const angles = parsed?.output?.format?.angles;
-  if (!Array.isArray(angles) || angles.length < 3) return false;
-  return angles.every(
-    (a) =>
-      typeof a?.angle_name === "string" &&
-      typeof a?.insight === "string" &&
-      Array.isArray(a?.hook_examples) &&
-      Array.isArray(a?.cta_examples)
-  );
-}
-
-function assertCreativeBriefShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.concept === "string" &&
-    Array.isArray(f?.visuals) &&
-    typeof f?.layout_notes === "string" &&
-    Array.isArray(f?.copy_on_image) &&
-    Array.isArray(f?.do_not_do)
-  );
-}
-
-function assertImagePromptShape(parsed) {
-  const f = parsed?.output?.format;
-  return (
-    typeof f?.prompt === "string" &&
-    typeof f?.negative_prompt === "string" &&
-    typeof f?.aspect_ratio === "string" &&
-    Array.isArray(f?.color_palette)
-  );
-}
-
-function assertByTask(task, parsed) {
-  switch (task) {
-    case "meta_ad_variants":
-      return assertMetaAdsShape(parsed);
-    case "google_ads":
-      return assertGoogleAdsShape(parsed);
-    case "email_promo":
-    case "email_welcome":
-      return assertEmailShape(parsed);
-    case "tiktok_script":
-      return assertTikTokShape(parsed);
-    case "landing_page_section":
-      return assertLandingShape(parsed);
-    case "campaign_plan":
-      return assertCampaignPlanShape(parsed);
-    case "angle_bank":
-      return assertAngleBankShape(parsed);
-    case "creative_brief":
-      return assertCreativeBriefShape(parsed);
-    case "image_prompt":
-      return assertImagePromptShape(parsed);
-    default:
-      // If unknown (shouldn't happen due to validateTask), accept
-      return true;
-  }
 }
 
 /**
- * ✅ Option A: Meta Ads dedicated endpoint
- * frontend can call: POST /api/ai/meta-ads
+ * One repair attempt for meta_ad_variants if the first response is invalid.
  */
-export const generateMetaAds = async (req, res) => {
-  req.body = {
-    ...(req.body || {}),
+async function repairMetaAds({ brandKit, input, constraints, examples, badParsed }) {
+  const system = `
+You are Nova, an AI marketing assistant.
+You MUST output ONLY valid JSON. No markdown. No commentary.
+
+You are fixing a meta_ad_variants response that did not match the required schema.
+Regenerate the 5 variants from scratch using the brand info + input + constraints.
+Do not invent product facts.
+`.trim();
+
+  const schemaReminder = `
+Return EXACTLY this JSON shape, with 5 variants:
+
+{
+  "output": {
+    "format": {
+      "variants": [
+        { "primary_text": "...", "headline": "...", "description": "...", "cta": "...", "angle": "..." },
+        { "primary_text": "...", "headline": "...", "description": "...", "cta": "...", "angle": "..." },
+        { "primary_text": "...", "headline": "...", "description": "...", "cta": "...", "angle": "..." },
+        { "primary_text": "...", "headline": "...", "description": "...", "cta": "...", "angle": "..." },
+        { "primary_text": "...", "headline": "...", "description": "...", "cta": "...", "angle": "..." }
+      ]
+    },
+    "notes": "..."
+  }
+}
+
+Rules:
+- notes must be a STRING (max 2 sentences)
+- Follow tone + audience if provided
+- Never invent pricing/country/features
+- Ready to paste into Meta Ads
+`.trim();
+
+  const user = {
     task: "meta_ad_variants",
+    brand_kit: brandKit,
+    input,
+    constraints,
+    few_shot_examples: (examples || []).map((e) => e.raw).filter(Boolean),
+    previous_invalid_output: badParsed,
   };
+
+  const second = await callLLM({
+    system,
+    user,
+    schemaReminder,
+    options: { temperature: 0.2 },
+  });
+
+  return normalizeMetaAds(second.parsed);
+}
+
+/**
+ * Unwrap to frontend-friendly shape:
+ * Return { format, notes } rather than nested objects.
+ */
+function unwrapOutput(parsed) {
+  if (!parsed || typeof parsed !== "object") return parsed;
+
+  if (parsed?.output?.format) return parsed.output;
+  if (parsed?.output?.output?.format) return parsed.output.output;
+  if (parsed?.meta_ad_variants?.output?.format) return parsed.meta_ad_variants.output;
+  return parsed.output || parsed;
+}
+
+/**
+ * Convert output to UI-friendly human text (NO JSON exposure).
+ */
+function formatHuman(task, out) {
+  if (!out) return "";
+
+  // meta variants summary (cards UI)
+  if (task === "meta_ad_variants" && out?.format?.variants) {
+    const notes = out?.notes ? `Notes: ${out.notes}` : "";
+    const angles = out.format.variants.map((v, i) => `#${i + 1} — ${v.angle}`).join("\n");
+    return ["Meta Ad Variants generated (5).", angles, notes].filter(Boolean).join("\n\n");
+  }
+
+  // image prompt
+  if (task === "image_prompt") {
+    const prompt = out?.prompt || out?.format?.prompt || out?.format?.positive_prompt;
+    const neg = out?.negative_prompt || out?.format?.negative_prompt;
+    const ratio = out?.ratio || out?.format?.ratio;
+    const notes = out?.notes;
+    return [
+      prompt ? `Prompt:\n${prompt}` : null,
+      neg ? `Negative:\n${neg}` : null,
+      ratio ? `Ratio: ${ratio}` : null,
+      notes ? `Notes: ${notes}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  // email tasks
+  if (task === "email_promo" || task === "email_welcome") {
+    const subject = out?.subject || out?.format?.subject;
+    const preview = out?.preview_text || out?.preview || out?.format?.preview_text;
+    const body = out?.body || out?.format?.body || out?.email || out?.text;
+    const notes = out?.notes;
+    return [
+      subject ? `Subject: ${subject}` : null,
+      preview ? `Preview: ${preview}` : null,
+      body ? `Email:\n${body}` : null,
+      notes ? `Notes: ${notes}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  // plain text fallback
+  if (typeof out === "string") return out;
+  if (out?.text && typeof out.text === "string") return out.text;
+  if (out?.output?.text && typeof out.output.text === "string") return out.output.text;
+  if (out?.notes) return String(out.notes);
+
+  // Final fallback (no JSON)
+  return "Generated successfully.";
+}
+
+// Dedicated endpoint (Meta Ads)
+export const generateMetaAds = async (req, res) => {
+  req.body = { ...(req.body || {}), task: "meta_ad_variants" };
   return generate(req, res);
 };
 
-/**
- * Main generation endpoint: POST /api/ai/generate
- */
 export const generate = async (req, res) => {
-  let job = null;
+  let job;
 
   try {
     const { task, input = {}, constraints = {} } = req.body || {};
@@ -260,28 +228,37 @@ export const generate = async (req, res) => {
 
     const creditsNeeded = taskCost(task);
     if ((user.credits ?? 0) < creditsNeeded) {
-      return res
-        .status(403)
-        .json({ message: "Not enough credits", creditsNeeded });
+      return res.status(403).json({ message: "Not enough credits", creditsNeeded });
     }
 
-    const brandKit = await BusinessProfile.findOne({ user: req.user.id }).lean();
-    if (!brandKit) {
-      return res
-        .status(400)
-        .json({ message: "Brand kit missing. Create it first." });
-    }
+    // ✅ Brand kit is OPTIONAL
+    const brandKitDoc = await BusinessProfile.findOne({ user: req.user.id }).lean();
+    const brandKitExists = !!brandKitDoc;
 
-    // store job first (so we can track failures too)
-    job = await AIJob.create({
+    // Safe fallback kit (no _id)
+    const brandKit = brandKitDoc || {
+      brandName: "",
+      niche: "",
+      tones: [],
+      audience: "",
+      offer: "",
+    };
+
+    // ✅ Create job (brandKitId only if real kit exists)
+    const jobPayload = {
       user: req.user.id,
       task,
-      brandKitId: brandKit._id,
       input,
       constraints,
       status: "running",
       creditsUsed: creditsNeeded,
-    });
+    };
+
+    if (brandKitExists && brandKitDoc?._id) {
+      jobPayload.brandKitId = brandKitDoc._id;
+    }
+
+    job = await AIJob.create(jobPayload);
 
     const examples = await retrieveExamples({
       task,
@@ -298,68 +275,97 @@ export const generate = async (req, res) => {
       examples,
     });
 
-    const { parsed: rawParsed, model, provider } = await callLLM({
+    const TOKEN_LIMITS = {
+      meta_ad_variants: 500,
+      email_promo: 900,
+      email_welcome: 900,
+      campaign_plan: 1200,
+      creative_brief: 900,
+      angle_bank: 600,
+    };
+
+    const first = await callLLM({
       system,
       user: compiledUser,
       schemaReminder,
+      options: {
+        temperature: task === "meta_ad_variants" ? 0.6 : 0.4,
+        num_predict: TOKEN_LIMITS[task] || 800,
+      },
     });
 
-    // ✅ Normalize FIRST (fix common model quirks)
-    const parsed = normalizeByTask(task, rawParsed);
 
-    // ✅ Validate AFTER normalize (so valid outputs don't fail)
-    if (!assertByTask(task, parsed)) {
-      job.status = "failed";
-      job.provider = provider;
-      job.model = model;
-      job.output = {
-        error: "Invalid output format from LLM",
-        raw: rawParsed,
-        normalized: parsed,
-      };
-      await job.save();
+    let parsed = first.parsed;
 
-      return res.status(500).json({
-        message: `LLM returned invalid format for ${task}`,
-        details: parsed,
-      });
+    // Meta ads strict validation + repair
+    if (task === "meta_ad_variants") {
+      parsed = normalizeMetaAds(parsed);
+
+      if (!assertMetaAdsShape(parsed)) {
+        parsed = await repairMetaAds({
+          brandKit,
+          input,
+          constraints,
+          examples,
+          badParsed: first.parsed,
+        });
+      }
+
+      if (!assertMetaAdsShape(parsed)) {
+        job.status = "failed";
+        job.error = "Invalid output format from LLM (meta_ad_variants)";
+        job.output = parsed; // optional debug
+        await job.save();
+
+        return res.status(500).json({
+          message: "LLM returned invalid format for meta_ad_variants",
+        });
+      }
     }
 
-    // ✅ deduct credits only after success
+    // ✅ Deduct credits only after success
     user.credits = (user.credits ?? 0) - creditsNeeded;
     await user.save();
 
     job.status = "done";
-    job.provider = provider;
-    job.model = model;
+    job.provider = first.provider;
+    job.model = first.model;
     job.output = parsed;
+    job.error = "";
     await job.save();
+
+    // Frontend-friendly shape
+    const finalOutput = unwrapOutput(parsed);
+
+    // Human text
+    const message = formatHuman(task, finalOutput);
 
     return res.json({
       success: true,
       creditsUsed: creditsNeeded,
       remainingCredits: user.credits,
       jobId: job._id,
-      output: parsed,
+      // output used for cards/advanced UI; users read message
+      output: finalOutput,
+      message,
+      usedFallbackKit: !brandKitExists,
     });
   } catch (err) {
-    const code = err.statusCode || 500;
-    console.error("AI generate error:", err.message);
+    const code = err?.statusCode || 500;
+    console.error("AI generate error:", err);
 
-    // If a job was created, mark it failed
-    if (job?._id) {
+    if (job) {
       try {
         job.status = "failed";
-        job.output = { error: err.message, details: err.details };
+        job.error = err?.message || "AI generation failed";
+        if (err?.details) job.output = { details: err.details };
         await job.save();
-      } catch (e) {
-        console.error("Failed to update job status:", e.message);
-      }
+      } catch {}
     }
 
     return res.status(code).json({
-      message: err.message || "AI generation failed",
-      details: err.details || undefined,
+      message: err?.message || "AI generation failed",
+      details: err?.details || undefined,
     });
   }
 };
@@ -370,5 +376,14 @@ export const history = async (req, res) => {
     .limit(30)
     .lean();
 
-  return res.json(items);
+  const normalized = items.map((x) => {
+    const out = x?.output ? unwrapOutput(x.output) : x.output;
+    return {
+      ...x,
+      output: out,
+      message: formatHuman(x.task, out),
+    };
+  });
+
+  return res.json(normalized);
 };
