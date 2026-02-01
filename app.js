@@ -30,10 +30,18 @@ app.use(
   })
 );
 
+/**
+ * ✅ STRIPE WEBHOOK FIX
+ * Stripe requires the raw body for signature verification.
+ * So we mount raw ONLY for this exact webhook route BEFORE express.json().
+ */
+app.use("/api/payment/stripe/webhook", express.raw({ type: "application/json" }));
+
+// Now safe to parse JSON for everything else
 app.use(express.json());
+
+// Static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use("/uploads", express.static("uploads"));
-app.use("/uploads", express.static(path.join(path.resolve(), "uploads")));
 
 // Routes
 app.use("/api/auth", authRoutes);
